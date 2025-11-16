@@ -3,19 +3,21 @@ import torch
 import torchaudio
 from torch.utils.data import Dataset
 from .audio_augment import AudioAugmentor
-import pandas as pd
 import os
+import json
+import kaldi_io
+import numpy as np
 
 class ASRDataset(Dataset):
     """audio dataset"""
     
     def __init__(self, config, data_dir: str, 
-                 csv_path: str, tokenizer, split: str = "train", augment: bool = False):
+                 jsonl_path: str, tokenizer, split: str = "train", augment: bool = False):
         """
         Args:
             config
             data_dir
-            csv_path: contain audio_path and text
+            jsonl_path: contain audio_path and text
             split: "train", "val", "test"
         """
         self.config = config
@@ -26,15 +28,16 @@ class ASRDataset(Dataset):
 
         self.augmentor = AudioAugmentor(self.config)
         
-        self.data = pd.read_csv(csv_path)
+        # Read JSONL file
+        self.data = []
+        with open(jsonl_path, 'r') as f:
+            for line in f:
+                self.data.append(json.loads(line))
+
         print(f"\nloading {split} dataset:")
-        print(f"csv_path: {csv_path}")
+        print(f"jsonl_path: {jsonl_path}")
         print(f"data_dir: {data_dir}")
         print(f"original sample number: {len(self.data)}")
-        
-        self.data['audio_path'] = self.data['audio_path'].apply(
-            lambda x: os.path.normpath(x).replace('\\', '/')
-        )
         
         self._validate_files()
         print(f"valid sample number: {len(self.data)}\n")
@@ -44,34 +47,58 @@ class ASRDataset(Dataset):
         
     def _validate_files(self):
         valid_samples = []
-        for idx, row in self.data.iterrows():
-            audio_path = os.path.join(self.data_dir, row['audio_path'])
-            audio_path = os.path.normpath(audio_path).replace('\\', '/')
-            if os.path.exists(audio_path):
-                valid_samples.append(row)
+        for item in self.data:
+            audio_path = item.get('path', '')
+
+            # Check if the path is absolute, otherwise join with data_dir
+            if not os.path.isabs(audio_path):
+                audio_path = os.path.join(self.data_dir, audio_path)
+
+            # For .ark files, check if the base file exists
+            if 'ark:' in audio_path:
+                base_ark_file = audio_path.split(':')[0]
+                if os.path.exists(base_ark_file):
+                    valid_samples.append(item)
+                else:
+                    print(f"Warning: .ark file not found - {base_ark_file}")
+            # For other formats, check the full path
             else:
-                print(f"Warning: data do not exist - {audio_path}")
+                full_audio_path = os.path.normpath(audio_path).replace('\\', '/')
+                if os.path.exists(full_audio_path):
+                    valid_samples.append(item)
+                else:
+                    print(f"Warning: audio file not found - {full_audio_path}")
         
-        self.data = pd.DataFrame(valid_samples)
+        self.data = valid_samples
         
     def __len__(self) -> int:
         return len(self.data)
         
     def __getitem__(self, idx: int):
-        row = self.data.iloc[idx]
+        item = self.data[idx]
         
-        audio_path = os.path.join(self.data_dir, row['audio_path'])
-        audio_path = os.path.normpath(audio_path).replace('\\', '/')
-        
+        audio_path = item.get('path', '')
+
+        # Check if the path is absolute, otherwise join with data_dir
+        if not os.path.isabs(audio_path):
+            audio_path = os.path.join(self.data_dir, audio_path)
+
         try:
-            waveform, sample_rate = torchaudio.load(audio_path)
-            
-            if sample_rate != self.config.sampling_rate:
-                resampler = torchaudio.transforms.Resample(
-                    orig_freq=sample_rate,
-                    new_freq=self.config.sampling_rate
-                )
-                waveform = resampler(waveform)
+            # Load audio using kaldi-io for .ark files
+            if 'ark:' in audio_path:
+                # kaldi-io returns a numpy array
+                waveform_np = kaldi_io.read_vec_flt(audio_path)
+                waveform = torch.from_numpy(waveform_np).float().unsqueeze(0) # Add channel dimension
+            else:
+                full_audio_path = os.path.normpath(audio_path).replace('\\', '/')
+                waveform, sample_rate = torchaudio.load(full_audio_path)
+
+                if sample_rate != self.config.sampling_rate:
+                    resampler = torchaudio.transforms.Resample(
+                        orig_freq=sample_rate,
+                        new_freq=self.config.sampling_rate
+                    )
+                    waveform = resampler(waveform)
 
             if self.augment:
                 waveform = self.augmentor(waveform)
@@ -80,17 +107,18 @@ class ASRDataset(Dataset):
             print(f"Error processing audio file {audio_path}: {str(e)}")
             waveform = torch.zeros((1, int(self.config.max_audio_length * self.config.sampling_rate)))
         
-        text = str(row['text'])
+        text = str(item.get('GT', ''))
         
         target_text = text + self.tokenizer.eos_token
     
         words = text.split() 
         num_mask = max(1, int(len(words) * self.config.mask_ratio))
-        mask_indices = random.sample(range(len(words)), num_mask)
+        mask_indices = random.sample(range(len(words)), num_mask if len(words) > num_mask else len(words))
+
         
         masked_words = words.copy()
-        for idx in mask_indices:
-            masked_words[idx] = self.tokenizer.unk_token
+        for i in mask_indices:
+            masked_words[i] = self.tokenizer.unk_token
             
         hint = ' '.join(masked_words)
       
@@ -105,7 +133,7 @@ class ASRDataset(Dataset):
             "<|start_header_id|>assistant<|end_header_id|>\n\nAfter understanding the rough transcript and check for grammar errors, the final transcript based on speech are:"
         )
         return waveform, prompt, prompt_h, target_text
-        
+
 class MyCollator:
     def __init__(self, audio_encoder_name, tokenizer, processor):
         self.audio_encoder_name = audio_encoder_name
@@ -124,8 +152,6 @@ class MyCollator:
             prompts_h.append(prompt_h)
             target_texts.append(target_text)
         
-        batch_size = waveforms[0]
-
         processed = self.hubert_processor(
             waveforms, 
             sampling_rate=16000,
@@ -172,78 +198,3 @@ class MyCollator:
             'prompt_mask_h': prompt_mask_h,
             'target_mask': target_mask
         }
-if __name__ == "__main__":
-    # ---------------------- #
-    # test config
-    # ---------------------- #
-    from types import SimpleNamespace
-    from transformers import AutoTokenizer
-
-    config = SimpleNamespace(
-        sampling_rate=16000,  
-        max_audio_length=30,  
-        batch_size=3,
-        num_workers=32
-    )
-
-    test_data_dir = "dataset/LibriSpeech"  
-    test_csv_path = "dataset/processed/val.csv" 
-    # audio_path,text,topic_desc
-    # audio1.wav,"Hello world","greeting"
-    # audio2.wav,"How are you","conversation"
-
-    tokenizer = AutoTokenizer.from_pretrained(
-        "llm/Llama-3.2-1B",  
-        torch_dtype=torch.bfloat16, 
-        padding_side='left'
-    )        
-
-    tokenizer.pad_token = tokenizer.bos_token
-    try:
-        dataset = ASRDataset(config, test_data_dir, test_csv_path, split="train")
-        print("\nsample number:", len(dataset))
-    except Exception as e:
-        raise RuntimeError(f"Error: {str(e)}") from e
-
-    collator = MyCollator(
-        audio_encoder_name="facebook/hubert-xlarge-ls960-ft",
-        tokenizer=tokenizer
-    )
-
-    print("\nSample test:")
-    sample = dataset[0]
-    print(f"waveform tensor shape: {sample[0].shape} (should be [1, sample point])")
-    print(f"Prompt : {sample[1]}...") 
-    print(f"Target : {sample[3]}...")
-
-    assert sample[0].dim() == 2, f"waveform dimention error，shold be (channels, samples), but got {sample[0].shape}"
-    assert isinstance(sample[1], str), "Prompt's type must be str"
-    assert isinstance(sample[3], str), "Target's type must be str"
-
-    print("\nBatch test:")
-    loader = torch.utils.data.DataLoader(
-        dataset,
-        batch_size=config.batch_size,
-        collate_fn=collator,
-        shuffle=True
-    )
-
-    try:
-        batch = next(iter(loader))
-        print("A batch data generation finished：")
-        print(f"audio_input shape: {batch['audio_input'].shape} | dtype: {batch['audio_input'].dtype}")
-        print(f"prompt_ids shape: {batch['prompt_ids'].shape} | eg: {batch['prompt_ids'][0]}")
-        print(f"target_ids shape: {batch['target_ids'].shape} | eg: {batch['target_ids'][0]}")
-        
-        assert batch['audio_input'].shape[0] == config.batch_size, "Audio batch_size don't match"
-        assert batch['prompt_ids'].shape[0] == config.batch_size, "Prompt batch_size don't match"
-        assert batch['target_ids'].shape[0] == config.batch_size, "Target batch_size don't match"
-        
-        assert torch.all(batch['audio_mask'].sum(dim=1) > 0), " audio_mask"
-        assert torch.all(batch['prompt_mask'].sum(dim=1) > 0), " prompt_mask"
-        assert torch.all(batch['target_mask'].sum(dim=1) > 0), " target_mask"
-        
-    except Exception as e:
-        raise RuntimeError(f"Failed in batch processing: {str(e)}") from e
-
-
