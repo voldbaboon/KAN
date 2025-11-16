@@ -53,9 +53,9 @@ class ASRConfig:
     
     # paths
     data_dir: str = "dataset/LibriSpeech"
-    train_csv: str = "dataset/processed/train.csv"
-    val_csv: str = "dataset/processed/val.csv"
-    test_csv: str = "dataset/processed/test.csv"
+    train_jsonl: str = "dataset/processed/train.jsonl"
+    val_jsonl: str = "dataset/processed/val.jsonl"
+    test_jsonl: str = "dataset/processed/test.jsonl"
     output_dir: str = "checkpoints"
     
     # device

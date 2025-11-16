@@ -49,28 +49,28 @@ class LightningASR(pl.LightningModule):
                 self.train_dataset = ASRDataset(
                     config=self.config,
                     data_dir=self.config.data_dir,
-                    csv_path=self.config.train_csv,
+                    jsonl_path=self.config.train_jsonl,
                     tokenizer=self.model.tokenizer,
                     split="train",
-                    augment=True  
+                    augment=True
                 )
 
             else:
-                self.model.audio_encoder.dimension_adaptor.train()  
+                self.model.audio_encoder.dimension_adaptor.train()
                 self.model.audio_encoder.encoder.eval()
                 self.model.llm_model.eval()
-            
+
                 self.train_dataset = ASRDataset(
                     config=self.config,
                     data_dir=self.config.data_dir,
-                    csv_path=self.config.train_csv,
+                    jsonl_path=self.config.train_jsonl,
                     tokenizer=self.model.tokenizer,
                     split="train"
                 )
             self.val_dataset = ASRDataset(
                 config=self.config,
                 data_dir=self.config.data_dir,
-                csv_path=self.config.val_csv,
+                jsonl_path=self.config.val_jsonl,
                 tokenizer=self.model.tokenizer,
                 split="val"
             )
@@ -83,7 +83,7 @@ class LightningASR(pl.LightningModule):
             self.test_dataset = ASRDataset(
                 config=self.config,
                 data_dir=self.config.data_dir,
-                csv_path=self.config.test_csv,
+                jsonl_path=self.config.test_jsonl,
                 tokenizer=self.model.tokenizer,
                 split="test"
             )
