@@ -8,9 +8,9 @@ class ASRConfig:
     # model config
     audio_enc_dim: int = 1280
     llm_dim: int = 3072
-    audio_processor_name: str = "facebook/hubert-xlarge-ls960-ft"
-    audio_encoder_name: str = "facebook/hubert-xlarge-ls960-ft"
-    llm_model_name: str = "Llama-3.1-8B-Instruct"
+    audio_processor_name: str = "/aistor/sjtu/hpc_stor01/home/wangchenghao/models/facebook/hubert-xlarge-ls960-ft"
+    audio_encoder_name: str = "/aistor/sjtu/hpc_stor01/home/wangchenghao/models/facebook/hubert-xlarge-ls960-ft"
+    llm_model_name: str = "/aistor/sjtu/hpc_stor01/home/wangchenghao/models/LLM-Research/Llama-3.1-8B-Instruct"
     
     # training stage 1
     batch_size: int = 4

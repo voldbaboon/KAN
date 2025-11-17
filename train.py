@@ -32,7 +32,8 @@ def main(args):
         project=config.wandb_project,
         name=config.wandb_name,
         entity=config.wandb_entity,
-        config=asdict(config)
+        config=asdict(config),
+        offline=True
     )
 
     # Model
